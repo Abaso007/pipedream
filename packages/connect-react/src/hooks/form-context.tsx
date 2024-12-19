@@ -8,26 +8,42 @@ import type {
 } from "@pipedream/sdk";
 import { useFrontendClient } from "./frontend-client-context";
 import type { ComponentFormProps } from "../components/ComponentForm";
+import type { FormFieldContext } from "./form-field-context";
+import {
+  appPropErrors, arrayPropErrors, booleanPropErrors, integerPropErrors,
+  stringPropErrors,
+} from "../utils/component";
 
-export type DynamicProps<T extends ConfigurableProps> = { id: string; configurable_props: T; }; // TODO
+export type DynamicProps<T extends ConfigurableProps> = { id: string; configurableProps: T; }; // TODO
 
 export type FormContext<T extends ConfigurableProps> = {
   component: V1Component<T>;
-  configurableProps: T; // dynamicProps.configurable_props || props.component.configurable_props
+  configurableProps: T; // dynamicProps.configurableProps || props.component.configurable_props
   configuredProps: ConfiguredProps<T>;
   dynamicProps?: DynamicProps<T>; // lots of calls require dynamicProps?.id, so need to expose
   dynamicPropsQueryIsFetching?: boolean;
+  errors: Record<string, string[]>;
+  fields: Record<string, FormFieldContext<ConfigurableProp>>;
   id: string;
   isValid: boolean;
   optionalPropIsEnabled: (prop: ConfigurableProp) => boolean;
   optionalPropSetEnabled: (prop: ConfigurableProp, enabled: boolean) => void;
   props: ComponentFormProps<T>;
+  propsNeedConfiguring: string[];
   queryDisabledIdx?: number;
+  registerField: <T extends ConfigurableProp>(field: FormFieldContext<T>) => void;
   setConfiguredProp: (idx: number, value: unknown) => void; // XXX type safety for value (T will rarely be static right?)
   setSubmitting: (submitting: boolean) => void;
   submitting: boolean;
   userId: string;
 };
+
+export const skippablePropTypes = [
+  "$.service.db",
+  "$.interface.http",
+  "$.interface.apphook",
+  "$.interface.timer", // TODO add support for this (cron string and timers)
+]
 
 export const FormContext = createContext<FormContext<any /* XXX fix */> | undefined>(undefined); // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -65,6 +81,10 @@ export const FormContextProvider = <T extends ConfigurableProps>({
     setQueryDisabledIdx,
   ] = useState<number | undefined>(0);
   const [
+    fields,
+    setFields,
+  ] = useState<Record<string, FormFieldContext<ConfigurableProp>>>({});
+  const [
     submitting,
     setSubmitting,
   ] = useState(false);
@@ -80,7 +100,7 @@ export const FormContextProvider = <T extends ConfigurableProps>({
   useEffect(() => {
     setEnabledOptionalProps({});
   }, [
-    component,
+    component.key,
   ]);
   // XXX pass this down? (in case we make it hash or set backed, but then also provide {add,remove} instead of set)
   const optionalPropIsEnabled = (prop: ConfigurableProp) => enabledOptionalProps[prop.name];
@@ -117,11 +137,12 @@ export const FormContextProvider = <T extends ConfigurableProps>({
       "dynamicProps",
     ],
     queryFn: async () => {
-      const { dynamic_props } = await client.componentReloadProps(componentReloadPropsInput);
+      const { dynamicProps } = await client.componentReloadProps(componentReloadPropsInput);
       // XXX what about if null?
       // TODO observation errors, etc.
-      if (dynamic_props) {
-        setDynamicProps(dynamic_props);
+      if (dynamicProps) {
+        formProps.onUpdateDynamicProps?.(dynamicProps);
+        setDynamicProps(dynamicProps);
       }
       setReloadPropIdx(undefined);
       return []; // XXX ok to mutate above and not look at data?
@@ -129,8 +150,18 @@ export const FormContextProvider = <T extends ConfigurableProps>({
     enabled: reloadPropIdx != null, // TODO or props.dynamicPropsId && !dynamicProps
   });
 
+  const [
+    propsNeedConfiguring,
+    setPropsNeedConfiguring,
+  ] = useState<string[]>([]);
+  useEffect(() => {
+    checkPropsNeedConfiguring()
+  }, [
+    configuredProps,
+  ]);
+
   // XXX fix types of dynamicProps, props.component so this type decl not needed
-  let configurableProps: T = dynamicProps?.configurable_props || formProps.component.configurable_props || [];
+  let configurableProps: T = dynamicProps?.configurableProps || formProps.component.configurable_props || [];
   if (propNames?.length) {
     const _configurableProps = [];
     for (const prop of configurableProps) {
@@ -149,37 +180,45 @@ export const FormContextProvider = <T extends ConfigurableProps>({
   // so can't rely on that base control form validation
   const propErrors = (prop: ConfigurableProp, value: unknown): string[] => {
     const errs: string[] = [];
-    if (value === undefined) {
-      if (!prop.optional) {
-        errs.push("required");
-      }
-    } else if (prop.type === "integer") { // XXX type should be "number"? we don't support floats otherwise...
-      if (typeof value !== "number") {
-        errs.push("not a number");
+    if (prop.optional || prop.hidden || prop.disabled || skippablePropTypes.includes(prop.type)) return []
+    if (prop.type === "app") {
+      const field = fields[prop.name]
+      if (field) {
+        const app = field.extra.app
+        errs.push(...(appPropErrors({
+          prop,
+          value,
+          app,
+        }) ?? []))
       } else {
-        if (prop.min != null && value < prop.min) {
-          errs.push("number too small");
-        }
-        if (prop.max != null && value > prop.max) {
-          errs.push("number too big");
-        }
+        errs.push("field not registered")
       }
     } else if (prop.type === "boolean") {
-      if (typeof value !== "boolean") {
-        errs.push("not a boolean");
-      }
+      errs.push(...(booleanPropErrors({
+        prop,
+        value,
+      }) ?? []))
+    } else if (prop.type === "integer") {
+      errs.push(...(integerPropErrors({
+        prop,
+        value,
+      }) ?? []))
     } else if (prop.type === "string") {
-      if (typeof value !== "string" ) {
-        errs.push("not a string");
-      }
-    } else if (prop.type === "app") {
-      // TODO need to know about auth type
+      errs.push(...(stringPropErrors({
+        prop,
+        value,
+      }) ?? []))
+    } else if (prop.type === "string[]") {
+      errs.push(...(arrayPropErrors({
+        prop,
+        value,
+      }) ?? []))
     }
     return errs;
   };
 
   const updateConfiguredPropsQueryDisabledIdx = (configuredProps: ConfiguredProps<T>) => {
-    let _queryDisabledIdx =  undefined;
+    let _queryDisabledIdx = undefined;
     for (let idx = 0; idx < configurableProps.length; idx++) {
       const prop = configurableProps[idx];
       if (prop.hidden || (prop.optional && !optionalPropIsEnabled(prop))) {
@@ -216,6 +255,9 @@ export const FormContextProvider = <T extends ConfigurableProps>({
       if (prop.hidden) {
         continue;
       }
+      if (skippablePropTypes.includes(prop.type)) {
+        continue;
+      }
       // if prop.optional and not shown, we skip and do on un-collapse
       if (prop.optional && !optionalPropIsEnabled(prop)) {
         continue;
@@ -241,7 +283,10 @@ export const FormContextProvider = <T extends ConfigurableProps>({
   ]);
 
   // clear all props on user change
-  const [prevUserId, setPrevUserId] = useState(userId)
+  const [
+    prevUserId,
+    setPrevUserId,
+  ] = useState(userId)
   useEffect(() => {
     if (prevUserId !== userId) {
       updateConfiguredProps({});
@@ -299,6 +344,27 @@ export const FormContextProvider = <T extends ConfigurableProps>({
     setEnabledOptionalProps(newEnabledOptionalProps);
   };
 
+  const checkPropsNeedConfiguring = () => {
+    const _propsNeedConfiguring = []
+    for (const prop of configurableProps) {
+      if (!prop || prop.optional || prop.hidden || skippablePropTypes.includes(prop.type)) continue
+      const value = configuredProps[prop.name as keyof ConfiguredProps<T>]
+      const errors = propErrors(prop, value)
+      if (errors.length) {
+        _propsNeedConfiguring.push(prop.name)
+      }
+    }
+    // propsNeedConfiguring.splice(0, propsNeedConfiguring.length, ..._propsNeedConfiguring)
+    setPropsNeedConfiguring(_propsNeedConfiguring)
+  }
+
+  const registerField = <T extends ConfigurableProp>(field: FormFieldContext<T>) => {
+    setFields((fields) => {
+      fields[field.prop.name] = field
+      return fields
+    });
+  };
+
   // console.log("***", configurableProps, configuredProps)
   const value: FormContext<T> = {
     id,
@@ -310,9 +376,13 @@ export const FormContextProvider = <T extends ConfigurableProps>({
     configuredProps,
     dynamicProps,
     dynamicPropsQueryIsFetching,
+    errors,
+    fields,
     optionalPropIsEnabled,
     optionalPropSetEnabled,
+    propsNeedConfiguring,
     queryDisabledIdx,
+    registerField,
     setConfiguredProp,
     setSubmitting,
     submitting,
