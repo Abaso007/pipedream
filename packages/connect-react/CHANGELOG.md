@@ -1,6 +1,39 @@
 <!-- markdownlint-disable MD024 -->
 # Changelog
 
+# [1.0.0-preview.15] - 2024-12-18
+
+- Emit dynamic props via `onUpdateDynamicProps`
+
+# [1.0.0-preview.14] - 2024-12-17
+
+- Fixed one case of "maximum update depth exceeded" (useEffect component dependency)
+
+# [1.0.0-preview.13] - 2024-12-17
+
+- Added skippable prop types to support triggers
+
+# [1.0.0-preview.12] - 2024-12-13
+
+- Don't throw when validating unexpected values from the api
+
+# [1.0.0-preview.11] - 2024-12-13
+
+- Make prop validation more consistent with app behavior
+- Relax validation of string props when value is not a string
+
+# [1.0.0-preview.10] - 2024-12-12
+
+- Enforce string length limits
+
+# [1.0.0-preview.9] - 2024-12-10
+
+- Disabled submit button when form is incomplete
+
+# [1.0.0-preview.8] - 2024-12-09
+
+- Fix dynamic props in the Connect demo app
+
 # [1.0.0-preview.7] - 2024-12-05
 
 - Use proper casing for `stringOptions` now that configure prop is properly async
